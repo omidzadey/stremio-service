@@ -56,13 +56,20 @@ async fn settings_get(State(state): State<SharedState>) -> Json<Value> {
 }
 
 async fn settings_post(
-    State(state): State<SharedState>,
+    State(_state): State<SharedState>,
     Json(_body): Json<serde_json::Value>,
 ) -> Json<Value> {
     // We don't actually allow Stremio to mutate any of our settings — most
     // of them don't apply when the upstream is Torbox. Acknowledge the
-    // request so the UI doesn't error and echo our current values back.
-    Json(settings_json(&state))
+    // request with the shape `stremio-core` expects: it calls
+    // `E::fetch::<SuccessResponse>` on this POST (see
+    // `stremio_core::models::streaming_server::set_settings`), where
+    // `SuccessResponse = { success: True }`. Returning anything else
+    // (e.g. the full settings document) fails deserialization and flips
+    // every Loadable<…> on the StreamingServer model to Err — which
+    // visibly hides the Cache size / Torrent profile / Transcode profile
+    // rows in stremio-web and shows "Error" next to the URL.
+    Json(json!({ "success": true }))
 }
 
 fn settings_json(state: &Arc<crate::gateway::state::AppState>) -> Value {
