@@ -84,7 +84,7 @@ jobs:
       - name: Zip release for macos
         uses: vimtor/action-zip@v1.1
         with:
-          files: resources/bin/macos/ffmpeg resources/bin/macos/ffprobe resources/bin/macos/stremio-runtime target/release/stremio-service resources/bin/macos/server.js LICENSE.md
+          files: target/release/stremio-service LICENSE.md
           dest: stremio-service-macos.zip
 
       - name: Upload dmg and zip files

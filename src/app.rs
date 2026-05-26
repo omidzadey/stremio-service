@@ -18,75 +18,59 @@ use tray_icon::{
 use crate::{
     config::Config,
     constants::{APP_ICON, STREMIO_URL},
-    server::Server,
-    updater::Updater,
+    gateway,
     util::load_icon,
 };
 use urlencoding::encode;
-
-/// Updater is supported only for non-linux operating systems.
-#[cfg(not(target_os = "linux"))]
-pub static IS_UPDATER_SUPPORTED: bool = true;
-/// Updater is supported only for non-linux operating systems.
-#[cfg(target_os = "linux")]
-pub static IS_UPDATER_SUPPORTED: bool = false;
 
 enum UserEvent {
     MenuEvent(MenuId),
 }
 
 pub struct Application {
-    /// The video server process
-    server: Server,
     config: Config,
 }
 
 impl Application {
     pub fn new(config: Config) -> Self {
-        Self {
-            server: Server::new(config.server.clone()),
-            config,
-        }
+        Self { config }
     }
 
-    pub async fn run(&self) -> Result<(), anyhow::Error> {
+    pub async fn run(self) -> Result<(), anyhow::Error> {
         let mut lockfile = LockFile::open(&self.config.lockfile)?;
-
         if !lockfile.try_lock()? {
             info!("Exiting, another instance is running.");
-
             return Ok(());
         }
 
         #[cfg(all(feature = "bundled", any(target_os = "linux", target_os = "macos")))]
         make_it_autostart(self.config.home_dir.clone()).await;
 
-        // NOTE: we do not need to run the Fruitbasket event loop but we do need to keep `app` in-scope for the full lifecycle of the app
         #[cfg(target_os = "macos")]
         let _fruit_app = register_apple_event_callbacks();
 
-        // Showing the system tray icon as soon as possible to give the user a feedback
-        let event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
-        let (mut system_tray, open_item_id, quit_item_id) =
-            create_system_tray(&event_loop, &self.config.tray_icon)?;
+        let gateway_cfg = self.config.gateway.clone();
+        let bind = gateway_cfg.bind;
+        let port = gateway_cfg.port;
 
-        let current_version = env!("CARGO_PKG_VERSION")
-            .parse()
-            .expect("Should always be valid");
-        let updater = Updater::new(current_version, &self.config);
-        let updated = updater.prompt_and_update().await;
-
-        if updated {
-            // Exit current process as the updater has spawn the
-            // new version in a separate process.
-            // We haven't started the server.js in this instance yet
-            // so it is safe to run the second service by the updater
+        if self.config.headless {
+            info!("Running headless on {bind}:{port}");
+            gateway::serve(gateway_cfg).await?;
             return Ok(());
         }
 
-        self.server.start().context("Failed to start server.js")?;
-        // cheap to clone and interior mutability
-        let mut server = self.server.clone();
+        // Spawn the gateway on a background tokio task so the tao event
+        // loop can run on the main thread (required by tray-icon on Linux
+        // and macOS).
+        let gateway_handle = tokio::spawn(async move {
+            if let Err(err) = gateway::serve(gateway_cfg).await {
+                error!("Gateway terminated: {err:#}");
+            }
+        });
+
+        let event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
+        let (mut system_tray, open_item_id, quit_item_id) =
+            create_system_tray(&event_loop, &self.config.tray_icon)?;
 
         event_loop.run(move |event, _event_loop, control_flow| {
             *control_flow = ControlFlow::Wait;
@@ -104,10 +88,7 @@ impl Application {
                 },
                 Event::LoopDestroyed => {
                     system_tray.take();
-
-                    if let Err(err) = server.stop() {
-                        error!("{err}")
-                    }
+                    gateway_handle.abort();
                 }
                 _ => (),
             }
@@ -122,7 +103,7 @@ fn create_system_tray(
     let open_item = MenuItem::new("Open Stremio Web", true, None);
     let quit_item = MenuItem::new("Quit", true, None);
 
-    let version_label = format!("v{}", env!("CARGO_PKG_VERSION"));
+    let version_label = format!("v{} (torbox)", env!("CARGO_PKG_VERSION"));
     let version_item = MenuItem::new(version_label.as_str(), false, None);
 
     let menu = Menu::new();
