@@ -32,6 +32,9 @@ pub fn router() -> Router<SharedState> {
         .route("/device-info", get(device_info))
         .route("/casting", get(casting))
         .route("/probe", get(probe))
+        // stremio-video calls `/hlsv2/probe` — it's the official endpoint
+        // used by `withStreamingServer.canPlayStream`. Same logic, same shape.
+        .route("/hlsv2/probe", get(probe))
         .route("/opensubHash", get(open_sub_hash))
         .route("/", get(root))
 }
@@ -97,8 +100,11 @@ fn settings_json(state: &Arc<crate::gateway::state::AppState>) -> Value {
             {
                 "id": "transcodeProfile",
                 "label": "TRANSCODE_PROFILE",
-                "type": "info",
-                "selections": []
+                "type": "select",
+                "selections": [
+                    { "name": "Disabled", "val": null },
+                    { "name": "Torbox (HLS)", "val": "torbox" }
+                ]
             }
         ]
     })
@@ -129,10 +135,17 @@ async fn network_info() -> Json<Value> {
 
 async fn device_info() -> Json<Value> {
     // Shape must match `stremio_core::types::streaming_server::DeviceInfo`
-    // (camelCase). The gateway has no ffmpeg of its own, so we advertise no
-    // hardware accelerations — transcoding happens on Torbox.
+    // (camelCase).
+    //
+    // `availableHardwareAccelerations` is what populates the
+    // "Transcode profile" dropdown in stremio-web (see
+    // `useStreamingOptions.ts`: each element becomes a dropdown entry).
+    // Advertising `"torbox"` lets the user pick a non-Disabled profile so
+    // stremio-video knows transcoding is available. The string is opaque to
+    // the client — it's stored as the `transcodeProfile` value and is only
+    // surfaced back to us in `POST /settings`, which we ignore.
     Json(json!({
-        "availableHardwareAccelerations": []
+        "availableHardwareAccelerations": ["torbox"]
     }))
 }
 
@@ -205,16 +218,17 @@ async fn probe(State(state): State<SharedState>, Query(q): Query<ProbeQuery>) ->
             m.audios
                 .iter()
                 .map(|a| {
-                    json!({
-                        "index": a.index,
-                        "codec_type": "audio",
-                        "codec_name": a.codec,
+                    let mut obj = json!({
+                        "track": "audio",
+                        "codec": a.codec,
                         "channels": a.channels,
-                        "channel_layout": null,
                         "language": a.language,
                         "title": a.title,
-                        "disposition": { "default": a.default.unwrap_or(false) as u8 },
-                    })
+                    });
+                    if let Some(idx) = a.index {
+                        obj["index"] = json!(idx);
+                    }
+                    obj
                 })
                 .collect::<Vec<_>>()
         })
@@ -226,57 +240,81 @@ async fn probe(State(state): State<SharedState>, Query(q): Query<ProbeQuery>) ->
             m.subtitles
                 .iter()
                 .map(|s| {
-                    json!({
-                        "index": s.index,
-                        "codec_type": "subtitle",
-                        "codec_name": s.codec,
+                    let mut obj = json!({
+                        "track": "subtitle",
+                        "codec": s.codec,
                         "language": s.language,
                         "title": s.title,
-                        "disposition": { "default": s.default.unwrap_or(false) as u8 },
-                    })
+                    });
+                    if let Some(idx) = s.index {
+                        obj["index"] = json!(idx);
+                    }
+                    obj
                 })
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
 
-    let duration: Option<f64> =
-        video.and_then(|v| v.duration.as_ref().and_then(|d| parse_duration(d)));
+    let container_name = container_from_filename(mapping.file_name.as_deref());
 
-    let format = json!({
-        "format_name": "mov,mp4,m4a,3gp,3g2,mj2,matroska,webm",
-        "duration": duration.map(|d| d.to_string()),
-        "size": data.size,
-        "bit_rate": video.and_then(|v| v.bitrate.clone()),
-    });
-
+    // Shape required by stremio-video's `canPlayStream`:
+    //   { format: { name }, streams: [{ track, codec, channels?, ... }] }
+    //
+    // The probe response is used by stremio-video to decide between
+    // direct-play and `/hlsv2/{id}/master.m3u8`. The fields it actually
+    // looks at are: `format.name` (substring-matched against supported
+    // container formats), and per-stream `track` + `codec` + `channels`.
+    // Anything else is informational. We keep `torbox` metadata as an
+    // extra debugging payload.
     let mut streams: Vec<Value> = Vec::new();
     if let Some(v) = video {
         streams.push(json!({
-            "index": 0,
-            "codec_type": "video",
-            "codec_name": v.codec,
+            "track": "video",
+            "codec": v.codec,
             "width": v.width,
             "height": v.height,
-            "pix_fmt": v.pixel_format,
-            "r_frame_rate": v.frame_rate,
+            "pixelFormat": v.pixel_format,
+            "frameRate": v.frame_rate,
+            "bitrate": v.bitrate,
             "duration": v.duration,
-            "bit_rate": v.bitrate,
         }));
     }
     streams.extend(audios);
     streams.extend(subtitles);
 
     Json(json!({
-        "format": format,
+        "format": { "name": container_name },
         "streams": streams,
         "torbox": {
             "needs_transcoding": data.needs_transcoding,
             "presigned_token": data.presigned_token,
             "open_subtitles_hash": data.open_subtitles_hash,
             "intro_information": data.intro_information,
+            "size": data.size,
         },
     }))
     .into_response()
+}
+
+/// Map a filename extension to the FFmpeg-style container name string
+/// Stremio looks for. Stremio does substring matching against this
+/// (`probe.format.name.indexOf(format) !== -1`), so we use the same comma-
+/// separated grouping FFmpeg's `format_name` uses for common containers.
+fn container_from_filename(name: Option<&str>) -> &'static str {
+    let name = name.unwrap_or("").to_ascii_lowercase();
+    let ext = name.rsplit('.').next().unwrap_or("");
+    match ext {
+        "mkv" | "webm" => "matroska,webm",
+        "mp4" | "m4v" | "m4a" | "mov" | "3gp" => "mov,mp4,m4a,3gp,3g2,mj2",
+        "avi" => "avi",
+        "ts" | "m2ts" | "mts" => "mpegts",
+        "flv" => "flv",
+        "wmv" | "asf" => "asf",
+        // When we don't recognize the extension, advertise the widest
+        // possible match so direct-play remains an option for browsers
+        // that can actually consume the content-type.
+        _ => "mov,mp4,m4a,3gp,3g2,mj2,matroska,webm",
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -319,24 +357,4 @@ fn uptime_seconds() -> u64 {
     static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
     let start = START.get_or_init(std::time::Instant::now);
     start.elapsed().as_secs()
-}
-
-/// Torbox returns durations in `HH:MM:SS.ffffff`. Convert to seconds.
-fn parse_duration(s: &str) -> Option<f64> {
-    let parts: Vec<&str> = s.split(':').collect();
-    match parts.as_slice() {
-        [h, m, sec] => {
-            let h: f64 = h.parse().ok()?;
-            let m: f64 = m.parse().ok()?;
-            let sec: f64 = sec.parse().ok()?;
-            Some(h * 3600.0 + m * 60.0 + sec)
-        }
-        [m, sec] => {
-            let m: f64 = m.parse().ok()?;
-            let sec: f64 = sec.parse().ok()?;
-            Some(m * 60.0 + sec)
-        }
-        [sec] => sec.parse().ok(),
-        _ => None,
-    }
 }

@@ -124,10 +124,17 @@ async fn handle_create(
         info_hash, mapping.torrent_id, mapping.file_id
     );
 
+    // stremio-video's `createTorrent.js` reads `guessedFileIdx` when its
+    // request body sets `guessFileIdx`, and falls back to the caller's
+    // `fileIdx` otherwise. We return both so either branch finds the
+    // correct file id and builds a `<gateway>/<infoHash>/<fileIdx>` URL
+    // that subsequent `/hlsv2/probe` / `/hlsv2/master.m3u8` calls can
+    // resolve back to the same Torbox mapping.
     Json(json!({
         "ok": true,
         "infoHash": info_hash,
         "fileIdx": mapping.file_id,
+        "guessedFileIdx": mapping.file_id,
         "fileName": mapping.file_name,
         "size": mapping.size,
         "torbox_id": mapping.torrent_id,
