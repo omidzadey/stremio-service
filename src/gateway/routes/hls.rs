@@ -33,15 +33,15 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use axum::body::Body;
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, RawQuery, State};
 use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::get;
 use axum::Router;
 use log::{debug, warn};
 use once_cell::sync::Lazy;
-use serde::Deserialize;
 use tokio::sync::RwLock;
+use url::form_urlencoded;
 use url::Url;
 
 use crate::gateway::routes::helpers::{
@@ -64,26 +64,41 @@ pub fn router() -> Router<SharedState> {
         )
 }
 
-#[derive(Debug, Deserialize, Default)]
-#[serde(default)]
+/// Decoded `/hlsv2/*` query string. We parse this by hand (rather than
+/// via `Query<T>` + `serde_urlencoded`) because stremio-video sends
+/// `audioCodecs` and `videoCodecs` as **repeated** keys (one entry per
+/// supported codec, e.g. `audioCodecs=aac&audioCodecs=mp3&audioCodecs=opus`).
+/// `serde_urlencoded` rejects repeated keys when the target field is a
+/// single-valued type — so any HEVC playback that triggers stremio-video's
+/// real `canPlayStream` check would 400 before our handler ran.
+#[derive(Debug, Default)]
 pub struct HlsQuery {
-    #[serde(rename = "mediaURL")]
     pub media_url: Option<String>,
     pub audio: Option<String>,
     pub subtitle: Option<String>,
-    pub video: Option<String>,
-    #[serde(rename = "videoCodecs")]
-    pub video_codecs: Option<String>,
-    #[serde(rename = "audioCodecs")]
-    pub audio_codecs: Option<String>,
-    #[serde(rename = "containerCodec")]
-    pub container_codec: Option<String>,
-    pub duration: Option<f64>,
-    /// Some clients send numeric audio_index/subtitle_index directly.
-    #[serde(rename = "audioIndex", alias = "audio_index")]
     pub audio_index: Option<u32>,
-    #[serde(rename = "subtitleIndex", alias = "subtitle_index")]
     pub subtitle_index: Option<u32>,
+}
+
+fn parse_hls_query(raw: Option<&str>) -> HlsQuery {
+    let mut out = HlsQuery::default();
+    let Some(raw) = raw else { return out };
+    for (k, v) in form_urlencoded::parse(raw.as_bytes()) {
+        let v = v.into_owned();
+        match k.as_ref() {
+            "mediaURL" => out.media_url = Some(v),
+            "audio" => out.audio = Some(v),
+            "subtitle" => out.subtitle = Some(v),
+            "audioIndex" | "audio_index" => out.audio_index = v.parse().ok(),
+            "subtitleIndex" | "subtitle_index" => out.subtitle_index = v.parse().ok(),
+            // Everything else (videoCodecs, audioCodecs, containerCodec,
+            // duration, maxAudioChannels, …) is information about the
+            // client we don't act on — Torbox picks the output profile
+            // server-side. Ignore them, including duplicates.
+            _ => {}
+        }
+    }
+    out
 }
 
 /// Memory cache of "this `convertId` resolves to that Torbox stream". We
@@ -130,8 +145,9 @@ async fn get_convert(convert_id: &str) -> Option<ConvertEntry> {
 async fn playlist_or_segment(
     State(state): State<SharedState>,
     Path((convert_id, filename)): Path<(String, String)>,
-    Query(query): Query<HlsQuery>,
+    RawQuery(raw_query): RawQuery,
 ) -> Response {
+    let query = parse_hls_query(raw_query.as_deref());
     if filename.ends_with(".m3u8") {
         playlist(state, convert_id, filename, query).await
     } else {
