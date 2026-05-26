@@ -30,6 +30,7 @@ pub fn router() -> Router<SharedState> {
         .route("/heartbeat", get(heartbeat))
         .route("/network-info", get(network_info))
         .route("/device-info", get(device_info))
+        .route("/casting", get(casting))
         .route("/probe", get(probe))
         .route("/opensubHash", get(open_sub_hash))
         .route("/", get(root))
@@ -62,38 +63,44 @@ async fn settings_post(
 }
 
 fn settings_json(state: &Arc<crate::gateway::state::AppState>) -> Value {
+    // The shape here must match `stremio_core::types::streaming_server::SettingsResponse`:
+    //   { "baseUrl": Url, "values": Settings }
+    // with `Settings` using camelCase field names. Anything else makes
+    // stremio-core fail to deserialize and mark the streaming server as
+    // errored, even though we return 200 OK.
+    let base_url = state
+        .cfg
+        .public_base_url
+        .clone()
+        .unwrap_or_else(|| format!("http://{}:{}", state.cfg.bind, state.cfg.port));
     json!({
+        "baseUrl": base_url,
         "values": {
-            "server_version": "4.20.17",
-            "app_path": "/dev/null",
-            "cache_root": "/dev/null",
-            "cache_size": 0,
-            "bt_max_connections": 0,
-            "bt_handshake_timeout": 0,
-            "bt_request_timeout": 0,
-            "bt_download_speed_soft_limit": 0,
-            "bt_download_speed_hard_limit": 0,
-            "bt_min_peers_for_stable": 0,
-            "remote_https": null,
-            "proxy_streams_enabled": false,
-            "transcoding_enabled": true,
-            "force_transcoding": state.cfg.force_transcode,
-            "torbox_backed": true,
+            "serverVersion": "4.20.17",
+            "appPath": "/dev/null",
+            "cacheRoot": "/dev/null",
+            "cacheSize": null,
+            "btMaxConnections": 0,
+            "btHandshakeTimeout": 0,
+            "btRequestTimeout": 0,
+            "btDownloadSpeedSoftLimit": 0,
+            "btDownloadSpeedHardLimit": 0,
+            "btMinPeersForStable": 0,
+            "remoteHttps": "",
+            "proxyStreamsEnabled": false,
+            "transcodeProfile": null,
+            "transcodingEnabled": true,
+            "forceTranscoding": state.cfg.force_transcode,
+            "torboxBacked": true,
         },
-        "options": {
-            "transcode_profile": {
-                "supports_hevc": false,
-                "supports_av1": false,
-                "max_audio_channels": 8,
-                "supports_ac3": true,
-                "supports_eac3": false,
-                "supports_truehd": false
+        "options": [
+            {
+                "id": "transcodeProfile",
+                "label": "TRANSCODE_PROFILE",
+                "type": "info",
+                "selections": []
             }
-        },
-        "version": "4.20.17",
-        "server_version": "4.20.17",
-        "appVersion": "4.20.17",
-        "transcoding_enabled": true,
+        ]
     })
 }
 
@@ -111,28 +118,31 @@ async fn heartbeat() -> impl IntoResponse {
 }
 
 async fn network_info() -> Json<Value> {
-    // Stremio looks up a few fields here to render the "Casting" UI. We
-    // truthfully say "no LAN-served streams" because Torbox lives on the
-    // public internet.
+    // Shape must match `stremio_core::types::streaming_server::NetworkInfo`
+    // (camelCase). Stremio uses this to populate the "Remote HTTPS" picker;
+    // we truthfully say there are no LAN interfaces to advertise because
+    // Torbox lives on the public internet.
     Json(json!({
-        "available_interfaces": [],
-        "ip": "0.0.0.0",
-        "hostname": hostname(),
-        "platform": std::env::consts::OS,
-        "arch": std::env::consts::ARCH,
-        "transcoding_backend": "torbox",
+        "availableInterfaces": []
     }))
 }
 
 async fn device_info() -> Json<Value> {
+    // Shape must match `stremio_core::types::streaming_server::DeviceInfo`
+    // (camelCase). The gateway has no ffmpeg of its own, so we advertise no
+    // hardware accelerations — transcoding happens on Torbox.
     Json(json!({
-        "platform": std::env::consts::OS,
-        "arch": std::env::consts::ARCH,
-        "gpu_supported": false,
-        "hwaccel": [],
-        "ffprobe": null,
-        "ffmpeg": null,
+        "availableHardwareAccelerations": []
     }))
+}
+
+/// stremio-core fetches `/casting` to populate the list of playback devices
+/// (e.g. Chromecast endpoints) that the streaming server can push to. The
+/// gateway has no LAN devices to advertise, so we return an empty array —
+/// the response shape required is `Vec<PlaybackDevice>` in JSON. If this
+/// returns 404, stremio-core marks the whole streaming server as errored.
+async fn casting() -> Json<Value> {
+    Json(json!([]))
 }
 
 #[derive(Debug, Deserialize)]
@@ -309,10 +319,6 @@ fn uptime_seconds() -> u64 {
     static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
     let start = START.get_or_init(std::time::Instant::now);
     start.elapsed().as_secs()
-}
-
-fn hostname() -> String {
-    std::env::var("HOSTNAME").unwrap_or_else(|_| "stremio-service".into())
 }
 
 /// Torbox returns durations in `HH:MM:SS.ffffff`. Convert to seconds.
