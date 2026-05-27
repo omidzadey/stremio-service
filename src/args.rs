@@ -66,6 +66,30 @@ pub struct Args {
     ///
     /// Direct-play (non-transcoded) requests already 307 to Torbox CDN
     /// presigned URLs regardless of this flag.
-    #[clap(long, env = "STREMIO_SERVICE_DIRECT_HLS")]
+    ///
+    /// Accepts a value (`--direct-hls true`/`false`) or no value (just
+    /// `--direct-hls` enables it). Env var values `1`, `true`, and `yes`
+    /// (case-insensitive) enable; anything else disables.
+    #[clap(
+        long,
+        env = "STREMIO_SERVICE_DIRECT_HLS",
+        num_args = 0..=1,
+        default_missing_value = "true",
+        default_value_t = false,
+        value_parser = parse_bool_lenient,
+    )]
     pub direct_hls: bool,
+}
+
+/// Lenient boolean parser: accepts `1`/`true`/`yes`/`on` (and the negations
+/// `0`/`false`/`no`/`off`) case-insensitively, so env-var values like
+/// `STREMIO_SERVICE_DIRECT_HLS=1` work alongside `--direct-hls true`.
+fn parse_bool_lenient(s: &str) -> Result<bool, String> {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" => Ok(true),
+        "0" | "false" | "no" | "off" | "" => Ok(false),
+        other => Err(format!(
+            "expected a boolean (1/0, true/false, yes/no, on/off), got `{other}`"
+        )),
+    }
 }
