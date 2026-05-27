@@ -47,4 +47,25 @@ pub struct Args {
     /// when running as a systemd service.
     #[clap(long)]
     pub headless: bool,
+
+    /// Skip the HLS playlist proxy and have the browser stream the
+    /// transcoded HLS playlist + segments directly from Torbox.
+    ///
+    /// Off by default. When set, after Torbox confirms the transcoder is
+    /// hot, the gateway 302-redirects `/hlsv2/<id>/master.m3u8` to the
+    /// upstream Torbox HLS URL (which has the API key in its query
+    /// string). Browser then talks straight to `*.tb-cdn.io` for the
+    /// playlist and every segment.
+    ///
+    /// Tradeoff:
+    ///   - Eliminates the gateway from the per-segment bandwidth path
+    ///     (significant on multi-Mbps video streams).
+    ///   - **Leaks the Torbox API token to the browser** — it ends up in
+    ///     network panels, dev tools history, browser history, and any
+    ///     screen-share. Only enable on single-user self-hosted setups.
+    ///
+    /// Direct-play (non-transcoded) requests already 307 to Torbox CDN
+    /// presigned URLs regardless of this flag.
+    #[clap(long, env = "STREMIO_SERVICE_DIRECT_HLS")]
+    pub direct_hls: bool,
 }

@@ -54,6 +54,7 @@ port = 11470              # default: 11470
 public_base_url = "https://stremio.example.com"   # only when behind TLS
 extra_allowed_origins = ["https://my-fork.example.com"]
 force_transcode = false   # default; set to true to always go via HLS
+direct_hls      = false   # default; see "HLS proxy vs direct redirect" below
 ```
 
 CLI flags:
@@ -65,6 +66,7 @@ CLI flags:
 | `--port` | Port to bind on (default `11470`) |
 | `--config` | Path to a TOML config file |
 | `--headless` | Skip the system-tray icon (recommended on servers) |
+| `--direct-hls` | Redirect HLS instead of proxying (env: `STREMIO_SERVICE_DIRECT_HLS`) |
 | `--open <url>` | Handle a `stremio://` URL and exit |
 
 ## Hosting modes
@@ -93,6 +95,23 @@ The gateway sets a CORS allowlist for `https://web.stremio.com`,
 config. Because the HLS playlist contains the Torbox API key, the
 gateway proxies the `.m3u8` (stripping the token) — segments are
 served directly by Torbox's CDN (no token, no PII).
+
+### HLS proxy vs direct redirect
+
+For transcoded (HEVC, AV1, etc.) playback the gateway has two modes:
+
+- **Proxy mode (default)** — the gateway fetches Torbox's HLS playlist,
+  rewrites segment URLs back to itself so the Torbox API token never
+  reaches the browser, and proxies every segment. Safer; uses your
+  gateway's bandwidth for video bytes.
+- **Direct mode** — enable with `--direct-hls` /
+  `STREMIO_SERVICE_DIRECT_HLS=1`. The gateway pre-warms the Torbox
+  transcoder, waits for it to come online, then 302-redirects to the raw
+  Torbox HLS URL. Browser fetches the playlist and every segment
+  directly from `*.tb-cdn.io`. **Your Torbox API token is visible in the
+  browser's network panel and history.** Only enable for single-user
+  self-hosted setups where you trust everyone with access to that
+  browser — never on a public multi-user instance.
 
 ## What's different from the upstream service
 

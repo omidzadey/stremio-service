@@ -49,6 +49,17 @@ pub struct GatewayConfig {
     /// Whether to ALWAYS route playback through Torbox transcoding even if
     /// the source codec would otherwise be directly playable.
     pub force_transcode: bool,
+    /// Whether to 302-redirect `/hlsv2/<id>/master.m3u8` to Torbox's raw
+    /// upstream URL instead of proxying it.
+    ///
+    /// When `true`, the gateway pre-warms the Torbox transcoder, blocks
+    /// the playlist request until upstream returns 200, then redirects.
+    /// The browser then fetches the m3u8 and every segment directly from
+    /// `*.tb-cdn.io` — the gateway is out of the per-segment data path.
+    ///
+    /// Trades the Torbox API token's confidentiality (it ends up in the
+    /// browser's network panel) for zero proxy bandwidth. Default `false`.
+    pub direct_hls: bool,
 }
 
 impl std::fmt::Debug for GatewayConfig {
@@ -71,6 +82,7 @@ impl std::fmt::Debug for GatewayConfig {
             .field("extra_allowed_origins", &self.extra_allowed_origins)
             .field("public_base_url", &self.public_base_url)
             .field("force_transcode", &self.force_transcode)
+            .field("direct_hls", &self.direct_hls)
             .finish()
     }
 }
@@ -86,6 +98,7 @@ pub struct FileConfig {
     pub extra_allowed_origins: Vec<String>,
     pub public_base_url: Option<String>,
     pub force_transcode: Option<bool>,
+    pub direct_hls: Option<bool>,
 }
 
 impl Config {
@@ -135,6 +148,7 @@ impl Config {
             extra_allowed_origins: file.extra_allowed_origins,
             public_base_url: file.public_base_url,
             force_transcode: file.force_transcode.unwrap_or(false),
+            direct_hls: args.direct_hls || file.direct_hls.unwrap_or(false),
         };
 
         Ok(Self {

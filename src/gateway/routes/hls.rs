@@ -220,6 +220,9 @@ async fn playlist(
     put_convert(&convert_id, info_hash.clone(), data.clone()).await;
 
     // Fetch the upstream playlist (with retries to ride out the cold start).
+    // In direct-HLS mode we throw away the body and just use the GET as a
+    // synchronous "is Torbox ready?" probe; otherwise we rewrite the body
+    // and return it inline.
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(70))
         .build()
@@ -229,6 +232,17 @@ async fn playlist(
         Ok(body) => body,
         Err(err) => return err_response(StatusCode::BAD_GATEWAY, err),
     };
+
+    if state.cfg.direct_hls {
+        // Upstream is hot — hand the browser the raw Torbox URL. Note
+        // this URL contains `?token=<API_KEY>`; the caller opted in to
+        // this exposure via --direct-hls.
+        debug!(
+            "hls direct redirect: convert={} hash={} -> upstream (token leaks to browser)",
+            convert_id, info_hash
+        );
+        return Redirect::temporary(&hls_url).into_response();
+    }
 
     let rewritten = rewrite_playlist(
         &body,
