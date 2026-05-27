@@ -1,10 +1,10 @@
 # Copyright (C) 2017-2026 Smart Code OOD 203358507
 [package]
 name = "stremio-service"
-version = "0.1.21"
+version = "0.2.0"
 edition = "2021"
 authors = ["Stremio"]
-description = "Stremio service - Freedom to Stream"
+description = "Stremio service - Torbox-backed streaming gateway"
 license = "GPL-2.0"
 homepage = "https://stremio.com"
 repository = "https://github.com/Stremio/stremio-service/"
@@ -12,32 +12,28 @@ readme = "README.md"
 
 default-run = "stremio-service"
 
-[package.metadata.server]
-version = "v4.20.17"
-
 [features]
 default = []
-# Weather or not we're running the app in a bundled (installed) mode.
+# Whether or not we're running the app in a bundled (installed) mode.
 #
 # The binary location for "bundled" is system-wide, while non-bundled
 # is locally inside `target/` and binaries paths will be based on
 # the Cargo.toml location.
 bundled = []
-# Will not download anything while building
-offline-build = []
 
 [dependencies]
 # for MacOS application bundling
 cargo_toml = "0.22"
 
 # CLI
-clap = { version = "4.0", features = ["derive"] }
+clap = { version = "4.0", features = ["derive", "env"] }
 
 # Errors
 anyhow = "1"
+thiserror = "1"
 
 # Async executor
-tokio = { version = "1.27", features = ["fs", "macros", "rt-multi-thread"] }
+tokio = { version = "1.27", features = ["fs", "macros", "rt-multi-thread", "sync", "time", "net"] }
 
 # Logging
 env_logger = "0.10"
@@ -50,24 +46,27 @@ fslock = "0.2"
 image = "0.24"
 once_cell = "1.16"
 
-# Updater
-semver = "1.0"
-
 # Open default app
 open = "4.1"
-# http calls
-reqwest = { version = "0.11", features = ["stream", "json"] }
-serde = { version = "1", features = ["derive"] }
-futures-util = "0.3"
-serde_json = "1"
 
-sha2 = "0.10"
+# HTTP gateway (axum) and middleware
+axum = { version = "0.8", features = ["query", "json", "macros"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["cors", "trace"] }
+
+# Upstream Torbox HTTP client
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "multipart", "stream"] }
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+futures-util = "0.3"
+
 hex = "0.4"
-rand = "0.8"
 url = { version = "2.3", features = ["serde"] }
+percent-encoding = "2.3"
 
 urlencoding = "2.1"
-zip-extract = "0.1"
 tao = "0.32.8"
 tray-icon = { version = "0.20.0", default-features = false }
 
@@ -85,20 +84,6 @@ chrono = "0.4"
 ico = "0.3.0"
 
 [build-dependencies]
-bytes = "1.0"
-flate2 = "1.0"
-reqwest = { version = "0.11", features = ["blocking"] }
-tar = "0.4"
-xz = "0.1.0"
-zip-extract = "0.1"
-
-url = { version = "2.3" }
-once_cell = "1.16"
-
-serde = "1"
-
-# For getting the Server.js version from this Cargo.toml file
-cargo_toml = "0.22"
 
 [dev-dependencies]
 walkdir = "2.3.3"
@@ -112,19 +97,13 @@ strip = "debuginfo"
 
 [package.metadata.deb]
 copyright = "Copyright (C) 2017-2026 Smart Code OOD 203358507"
-extended-description = "Media Center"
-# depends = "$auto, ffprobe (>=4.2.7)"
+extended-description = "Media Center streaming gateway backed by Torbox"
 depends = "$auto"
 section = "Stremio;Media;Play;"
 priority = "optional"
 assets = [
     ["resources/stremio-service", "/usr/bin/stremio-service", "755"],
     ["target/release/stremio-service", "/usr/share/stremio-service/stremio-service", "755"],
-    ["resources/bin/linux/stremio-runtime", "/usr/share/stremio-service/stremio-runtime", "755"],
-    # We use a specific version of ffmpeg-jellyfin
-    ["resources/bin/linux/ffmpeg", "/usr/share/stremio-service/ffmpeg", "755"],
-    ["resources/bin/linux/ffprobe", "/usr/share/stremio-service/ffprobe", "755"],
-    ["resources/bin/linux/server.js", "/usr/share/stremio-service/server.js", "755"],
     ["LICENSE.md", "/usr/share/licenses/stremio-service/LICENSE.md", "644"],
     ["resources/com.stremio.service.desktop", "/usr/share/applications/com.stremio.service.desktop", "644"],
     ["resources/com.stremio.service.metainfo.xml", "/usr/share/metainfo/com.stremio.service.metainfo.xml", "644"],
@@ -133,25 +112,18 @@ assets = [
 features = ["bundled"]
 
 [package.metadata.generate-rpm]
-# post_install_script = "gnome_version=$(gnome-shell --version  | awk '{print $NF}') && echo https://extensions.gnome.org/extension-data/appindicatorsupportrgcjonas.gmail.com.GNOME_VERSION.shell-extension.zip | sed -e s/GNOME_VERSION/$gnome_version/g"
 assets = [
     { source = "resources/stremio-service", dest = "/usr/bin/stremio-service", mode = "755" },
     { source = "target/release/stremio-service", dest = "/usr/share/stremio-service/stremio-service", mode = "755" },
-    { source = "resources/bin/linux/stremio-runtime", dest = "/usr/share/stremio-service/stremio-runtime", mode = "755" },
-    { source = "resources/bin/linux/ffmpeg", dest = "/usr/share/stremio-service/ffmpeg", mode = "755" },
-    { source = "resources/bin/linux/ffprobe", dest = "/usr/share/stremio-service/ffprobe", mode = "755" },
-    { source = "resources/bin/linux/server.js", dest = "/usr/share/stremio-service/server.js", mode = "755" },
     { source = "LICENSE.md", dest = "/usr/share/licenses/stremio-service/LICENSE.md", mode = "644" },
     { source = "resources/com.stremio.service.desktop", dest = "/usr/share/applications/com.stremio.service.desktop", mode = "644" },
     { source = "resources/com.stremio.service.metainfo.xml", dest = "/usr/share/metainfo/com.stremio.service.metainfo.xml", mode = "644" },
     { source = "resources/com.stremio.service.svg", dest = "/usr/share/icons/hicolor/scalable/apps/com.stremio.service.svg", mode = "644" },
 ]
-# depends = "$auto, ffprobe (>=4.2.7)"
 features = ["bundled"]
 
 [package.metadata.generate-rpm.requires]
 libappindicator-gtk3 = "*"
-# ffprobe = ">=4.2.7"
 
 [package.metadata.macos]
 name = "StremioService"
@@ -163,9 +135,5 @@ url_scheme = "stremio"
 executable = "stremio-service"
 bins = [
     ["target/release/stremio-service", "stremio-service"],
-    ["resources/bin/macos/stremio-runtime", "stremio-runtime"],
-    ["resources/bin/macos/server.js", "server.js"],
-    ["resources/bin/macos/ffmpeg", "ffmpeg"],
-    ["resources/bin/macos/ffprobe", "ffprobe"],
     ["LICENSE.md", "LICENSE.md"]
 ]
